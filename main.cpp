@@ -1,8 +1,11 @@
 #include "feed.h"
-#include "worker_queue.h"
+#include "spsc_queue.h"
 
 #include <cassert>
+#include <atomic>
 #include <iostream>
+#include <memory>
+#include <thread>
 #include <vector>
 
 struct WorkerStats {
@@ -15,18 +18,38 @@ struct FanoutStats {
     std::uint64_t dropped = 0;
 };
 
-void publish_tick(const Tick& tick, std::vector<WorkerQueue>& queues,
+template <std::size_t Capacity>
+using WorkerQueue = spsc::SpscQueue<Tick, Capacity>;
+
+template <std::size_t Capacity>
+using WorkerQueues = std::vector<std::unique_ptr<WorkerQueue<Capacity>>>;
+
+template <std::size_t Capacity>
+WorkerQueues<Capacity> make_worker_queues(int workers) {
+    WorkerQueues<Capacity> queues;
+    queues.reserve(workers);
+
+    for (int i = 0; i < workers; ++i) {
+        queues.push_back(std::make_unique<WorkerQueue<Capacity>>());
+    }
+
+    return queues;
+}
+
+template <std::size_t Capacity>
+void publish_tick(const Tick& tick, WorkerQueues<Capacity>& queues,
                   FanoutStats& stats) {
     ++stats.published;
 
     for (auto& queue : queues) {
-        if (!queue.try_push(tick)) {
+        if (!queue->try_push(tick)) {
             ++stats.dropped;
         }
     }
 }
 
-void drain_worker(WorkerQueue& queue, WorkerStats& stats) {
+template <std::size_t Capacity>
+void drain_worker(WorkerQueue<Capacity>& queue, WorkerStats& stats) {
     while (auto tick = queue.try_pop()) {
         ++stats.received;
         stats.last_sequence = tick->sequence;
@@ -55,19 +78,15 @@ void test_basic_fanout() {
 
     Feed feed;
     FanoutStats fanout_stats;
-    std::vector<WorkerQueue> queues;
+    auto queues = make_worker_queues<16>(kWorkers);
     std::vector<WorkerStats> workers(kWorkers);
-
-    for (int i = 0; i < kWorkers; ++i) {
-        queues.emplace_back(kTicks);
-    }
 
     for (int i = 0; i < kTicks; ++i) {
         publish_tick(feed.next(), queues, fanout_stats);
     }
 
     for (int i = 0; i < kWorkers; ++i) {
-        drain_worker(queues[i], workers[i]);
+        drain_worker(*queues[i], workers[i]);
     }
 
     assert(fanout_stats.published == kTicks);
@@ -88,19 +107,15 @@ void test_drop_when_worker_queue_is_full() {
 
     Feed feed;
     FanoutStats fanout_stats;
-    std::vector<WorkerQueue> queues;
+    auto queues = make_worker_queues<kQueueCapacity>(kWorkers);
     std::vector<WorkerStats> workers(kWorkers);
-
-    for (int i = 0; i < kWorkers; ++i) {
-        queues.emplace_back(kQueueCapacity);
-    }
 
     for (int i = 0; i < kTicks; ++i) {
         publish_tick(feed.next(), queues, fanout_stats);
     }
 
     for (int i = 0; i < kWorkers; ++i) {
-        drain_worker(queues[i], workers[i]);
+        drain_worker(*queues[i], workers[i]);
     }
 
     assert(fanout_stats.published == kTicks);
@@ -114,8 +129,57 @@ void test_drop_when_worker_queue_is_full() {
     std::cout << "drop policy ok\n";
 }
 
+void test_threaded_fanout() {
+    constexpr int kWorkers = 3;
+    constexpr int kTicks = 1000;
+
+    Feed feed;
+    FanoutStats fanout_stats;
+    auto queues = make_worker_queues<1024>(kWorkers);
+    std::vector<WorkerStats> workers(kWorkers);
+    std::atomic<bool> done = false;
+
+    std::vector<std::thread> worker_threads;
+    worker_threads.reserve(kWorkers);
+
+    for (int i = 0; i < kWorkers; ++i) {
+        worker_threads.emplace_back([&, i] {
+            while (!done.load(std::memory_order_acquire)) {
+                drain_worker(*queues[i], workers[i]);
+            }
+
+            drain_worker(*queues[i], workers[i]);
+        });
+    }
+
+    std::thread feed_thread([&] {
+        for (int i = 0; i < kTicks; ++i) {
+            publish_tick(feed.next(), queues, fanout_stats);
+        }
+
+        done.store(true, std::memory_order_release);
+    });
+
+    feed_thread.join();
+
+    for (auto& worker_thread : worker_threads) {
+        worker_thread.join();
+    }
+
+    assert(fanout_stats.published == kTicks);
+    assert(fanout_stats.dropped == 0);
+
+    for (const auto& worker : workers) {
+        assert(worker.received == kTicks);
+        assert(worker.last_sequence == kTicks);
+    }
+
+    std::cout << "threaded fanout ok\n";
+}
+
 int main() {
     test_feed();
     test_basic_fanout();
     test_drop_when_worker_queue_is_full();
+    test_threaded_fanout();
 }

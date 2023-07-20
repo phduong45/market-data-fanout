@@ -4,10 +4,10 @@ SANITIZERS := -fsanitize=address,undefined -fno-omit-frame-pointer
 
 .PHONY: test clean
 
-main: main.cpp tick.h feed.h worker_queue.h
+main: main.cpp tick.h feed.h spsc_queue.h
 	$(CXX) $(CXXFLAGS) -O0 -g main.cpp -o main
 
-test: main.cpp tick.h feed.h worker_queue.h
+test: main.cpp tick.h feed.h spsc_queue.h
 	$(CXX) $(CXXFLAGS) $(SANITIZERS) -O1 -g main.cpp -o main
 	./main
 
