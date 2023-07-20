@@ -81,7 +81,41 @@ void test_basic_fanout() {
     std::cout << "basic fanout ok\n";
 }
 
+void test_drop_when_worker_queue_is_full() {
+    constexpr int kWorkers = 2;
+    constexpr int kTicks = 5;
+    constexpr int kQueueCapacity = 2;
+
+    Feed feed;
+    FanoutStats fanout_stats;
+    std::vector<WorkerQueue> queues;
+    std::vector<WorkerStats> workers(kWorkers);
+
+    for (int i = 0; i < kWorkers; ++i) {
+        queues.emplace_back(kQueueCapacity);
+    }
+
+    for (int i = 0; i < kTicks; ++i) {
+        publish_tick(feed.next(), queues, fanout_stats);
+    }
+
+    for (int i = 0; i < kWorkers; ++i) {
+        drain_worker(queues[i], workers[i]);
+    }
+
+    assert(fanout_stats.published == kTicks);
+    assert(fanout_stats.dropped == (kTicks - kQueueCapacity) * kWorkers);
+
+    for (const auto& worker : workers) {
+        assert(worker.received == kQueueCapacity);
+        assert(worker.last_sequence == kQueueCapacity);
+    }
+
+    std::cout << "drop policy ok\n";
+}
+
 int main() {
     test_feed();
     test_basic_fanout();
+    test_drop_when_worker_queue_is_full();
 }
