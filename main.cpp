@@ -79,6 +79,19 @@ double average_latency_ns(const WorkerStats& stats) {
            static_cast<double>(stats.received);
 }
 
+void print_summary(const FanoutStats& fanout_stats,
+                   const std::vector<WorkerStats>& workers) {
+    std::cout << "\nfanout summary\n";
+    std::cout << "published: " << fanout_stats.published << "\n";
+    std::cout << "dropped: " << fanout_stats.dropped << "\n";
+
+    for (std::size_t i = 0; i < workers.size(); ++i) {
+        std::cout << "worker " << i << ": received=" << workers[i].received
+                  << " avg_latency_ns=" << average_latency_ns(workers[i])
+                  << " max_latency_ns=" << workers[i].max_latency_ns << "\n";
+    }
+}
+
 void test_feed() {
     Feed feed;
 
@@ -203,6 +216,7 @@ void test_threaded_fanout() {
         assert(average_latency_ns(worker) > 0.0);
     }
 
+    print_summary(fanout_stats, workers);
     std::cout << "threaded fanout ok\n";
 }
 
