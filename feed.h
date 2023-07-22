@@ -2,6 +2,7 @@
 
 #include "tick.h"
 
+#include <chrono>
 #include <cstdint>
 
 class Feed {
@@ -17,10 +18,16 @@ class Feed {
             .bid = mid - 0.01,
             .ask = mid + 0.01,
             .sequence = sequence_,
-            .timestamp_ns = sequence_ * 1000,
+            .timestamp_ns = now_ns(),
         };
     }
 
   private:
+    static std::uint64_t now_ns() {
+        const auto now = std::chrono::steady_clock::now().time_since_epoch();
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+    }
+
     std::uint64_t sequence_ = 0;
 };
